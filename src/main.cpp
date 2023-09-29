@@ -37,7 +37,7 @@ Pico Connections:
 I2C Addresses:
 
  Si5351
- Si4732 0x11
+ Si4732 0x11 (SEND +V)
 
 MPM Sep 2023
 
@@ -68,7 +68,7 @@ byte lights = 0;
 bool Tx_Status = 1;
 uint32_t RF_freq = 14074000UL; // freq in Hz
 
-//#define CALIBRATE 1
+//``````````````````````````#define CALIBRATE 1
 
 
 // The RP2040 Zero module only has one LED, a WS2812
@@ -229,7 +229,7 @@ void receiver_setup() {
 
 
 void clocks_setup() {
-  i2c_found = si5351.init(SI5351_CRYSTAL_LOAD_10PF,0, 133000);
+  i2c_found = si5351.init(SI5351_CRYSTAL_LOAD_6PF,0, 0);
   if (i2c_found) {
  
   si5351.set_freq(32768UL*100UL, SI5351_CLK1);
