@@ -160,13 +160,7 @@ void adc_setup() {
   for (int i = 0; i < 48; i++) {
     monodata[i] = 0;
   } 
-  // initializaztion of ADC data write counter
-  writeCounter=0;
-  nBytes=0;
-  adc_set_clkdiv(249.0);                      // 192kHz sampling  (48000 / (249.0 +1) = 192)
-  adc_fifo_setup(true,false,0,false,false);   // fifo
-  adc_fifo_drain ();                     //initialization of adc fifo
-  adc_run(true); 
+
   #else
 
   // initialize the dma adc
@@ -212,7 +206,7 @@ void receiver_setup() {
   ThisThread::sleep_for(100ms);
   #if 1
   loadSSB();
-  rx.setSSB(14000,14350,RF_freq/1000,1,SSB_USB); //14074 USB
+  rx.setSSB(14000,14350,RF_freq/1000,1,SSB_USB); //14074 USB default
   rx.setSSBSidebandCutoffFilter(1);
   rx.setSSBAutomaticVolumeControl(1);
   rx.setSSBAudioBandwidth(3);
@@ -223,7 +217,7 @@ void receiver_setup() {
   #endif
  // rx.setAvcAmMaxGain(90);
   ThisThread::sleep_for(200ms);
-  rx.setVolume(50);
+  rx.setVolume(55);
 
 }  
 
@@ -325,12 +319,6 @@ void cat() {
       if (freqset >= 1000000 && freqset <= 54000000) freq = freqset;
         change_freq(freq);
         ThisThread::sleep_for(50ms);
-//        RF_freq=(uint64_t)freq;
- //       si5351.set_freq((RF_freq-BFO_freq)*100ULL, SI5351_CLK1);  //for RX
- //       digitalWrite(pin_LED_POWER, LOW);  //NEOPIXEL LED OFF        
- //       delay(50);
- //       adc_fifo_drain ();
- //       adc_offset = adc();
     }          
     sent = "FA" // Return 11 digit frequency in Hz.  
     + String("00000000000").substring(0,11-(String(freq).length()))   
@@ -342,13 +330,6 @@ void cat() {
       if (freqset >= 1000000 && freqset <= 54000000) freq = freqset;
         change_freq(freq);
         ThisThread::sleep_for(50ms);
-//        RF_freq=(uint64_t)freq;
- //       si5351.set_freq((RF_freq-BFO_freq)*100ULL, SI5351_CLK1);  //for RX
- //       digitalWrite(pin_LED_POWER, LOW);  //NEOPIXEL LED OFF        
- //       delay(50);
- //       adc_fifo_drain ();
- //       adc_offset = adc();
-
     }          
     sent = "FB" // Return 11 digit frequency in Hz.  
     + String("00000000000").substring(0,11-(String(freq).length()))   
