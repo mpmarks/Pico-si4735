@@ -107,6 +107,7 @@ bool ssbLoaded = false;
 
 #define RX_RST 3
 #define RX_I2C 0x11
+#define RX_ENABLE 6
 void loadSSB();
 
 // USB Audio IO
@@ -189,11 +190,13 @@ void receiver_setup() {
   byte error;
   // Reset the RX
   pinMode(RX_RST, OUTPUT);
+  pinMode(RX_ENABLE, OUTPUT);
   digitalWrite(RX_RST, HIGH);
   ThisThread::sleep_for(MS(200));
   digitalWrite(RX_RST, LOW);
   ThisThread::sleep_for(MS(200));
   digitalWrite(RX_RST, HIGH);
+  digitalWrite(RX_ENABLE, HIGH);
   // Check RX I2C
   i2c_found = false;
   Wire.beginTransmission(RX_I2C);
