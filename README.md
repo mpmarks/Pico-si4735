@@ -10,7 +10,7 @@ without extra hardware or time critical firmware.
 The Si5351 generates the 32769 Hz clock for the Si4732 (CLK1) as well as the transmit clock (CLK0). I'm going
 to try using CLK2 to calibrate the receiver.
 
-Status: 1/14/24. Reciever works well for 20M FT8 sending the received audio via USB to WSJT-X.
+Status: 1/14/24. Receiver works well for 20M FT8 sending the received audio via USB to WSJT-X.
 The FT8 transmit code depends on determining the audio frequency
 from the incoming USB Audio. This code is still in development. There are 2 problems currently 
 the derived audio frequency is not correct, and there are short gaps in the transmit stream that may be 
