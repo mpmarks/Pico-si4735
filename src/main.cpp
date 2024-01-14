@@ -20,7 +20,7 @@ Tasks:
 
 1. ADC sampling and USB Audio Write to PC
 2. CAT serial protocol
-3. USB Audio read from PC - determines input freq
+3. USB Audio read from PC - determines transmit freq
 4. Receiver control 
 
 Main loop:
@@ -33,11 +33,12 @@ Pico Connections:
  P3  Si4732 RST
  P26 (A0) ADC in
  P4/5  Si5351 I2C
+ PA6  RX_ENABLE (H for RX, L for TX)
 
 I2C Addresses:
 
  Si5351
- Si4732 0x11 (SEND +V)
+ Si4732 0x11 (SENB +V)
 
 MPM Sep 2023
 
@@ -49,6 +50,9 @@ MPM Sep 2023
 #include <rtos.h>
 #include <pico/multicore.h>
 #include "dma_adc.h"
+
+// My tuning parameters
+#include "simple_digital.h"
 
 using namespace std;
 using namespace rtos;
@@ -68,7 +72,8 @@ byte lights = 0;
 bool Tx_Status = 1;
 uint32_t RF_freq = 14074000UL; // freq in Hz
 
-//``````````````````````````#define CALIBRATE 1
+//#define CALIBRATE 1
+//#define DEBUGGING 1
 
 
 // The RP2040 Zero module only has one LED, a WS2812
@@ -87,9 +92,9 @@ uint32_t colors[] = {
 uint16_t adc_val = 0;
 
 // Si5351
-// Clk0 - ?
+// Clk0 - Transmit clock
 // Clk1 - 32768 KHz as RCLK to Si47XX
-// Clk2 - Transmit clock
+// Clk2 - Calibrate clock
 #include <si5351.h>
 Si5351 si5351;
 bool i2c_found = false;
@@ -114,15 +119,16 @@ void loadSSB();
 #include "PluggableUSBAudio.h"
 #define AUDIOSAMPLING 48000  // USB Audio sampling frequency
 USBAudio audio(true, AUDIOSAMPLING, 2, AUDIOSAMPLING, 2);
-static uint8_t readBuffer[192];  //48 sampling (=  0.5 ms at 48000 Hz sampling) data sent from PC are recived (16bit stero; 48*2*2).
-int16_t writeBuffer16[96];       //48 sampling date are written to PC in one packet (stero).
+static uint8_t readBuffer[192];  //48 samples (=  0.5 ms at 48000 Hz sampling) data sent from PC are received (16bit stero; 48*2*2).
+int16_t writeBuffer16[96];       //48 samples of data are written to PC in one packet (stereo).
 uint16_t writeCounter=0;
 uint16_t nBytes=0;
 int16_t monodata[48];  
-bool USBAudio_read;
+volatile bool USBAudio_read_in;
 bool receiving;
 
 void USBAudioWrite(int16_t left, int16_t right);
+void USBAudioRead();
 void change_freq(uint32_t f);
 
 // Setups
@@ -197,6 +203,7 @@ void receiver_setup() {
   ThisThread::sleep_for(MS(200));
   digitalWrite(RX_RST, HIGH);
   digitalWrite(RX_ENABLE, HIGH);
+ // digitalWrite(RX_ENABLE, LOW);
   // Check RX I2C
   i2c_found = false;
   Wire.beginTransmission(RX_I2C);
@@ -212,7 +219,7 @@ void receiver_setup() {
   rx.setSSB(14000,14350,RF_freq/1000,1,SSB_USB); //14074 USB default
   rx.setSSBSidebandCutoffFilter(1);
   rx.setSSBAutomaticVolumeControl(1);
-  rx.setSSBAudioBandwidth(3);
+  rx.setSSBAudioBandwidth(2);
   //rx.setSSBBfo(500);
   #else
   rx.setAM(570,1500,1080,10);
@@ -229,23 +236,35 @@ void clocks_setup() {
   i2c_found = si5351.init(SI5351_CRYSTAL_LOAD_6PF,0, 0);
   if (i2c_found) {
  
+  si5351.set_correction(500, SI5351_PLL_INPUT_XO);
+
+ // RX clock
   si5351.set_freq(32768UL*100UL, SI5351_CLK1);
   si5351.output_enable(SI5351_CLK1, 1);
-  si5351.drive_strength(SI5351_CLK1, SI5351_DRIVE_2MA);
-
+  si5351.drive_strength(SI5351_CLK1, SI5351_DRIVE_4MA);
+// TX clock
+  si5351.set_freq(14000000UL*100UL, SI5351_CLK0);
+  si5351.drive_strength(SI5351_CLK0, SI5351_DRIVE_8MA);
+  #ifdef CALIBRATE
+   si5351.output_enable(SI5351_CLK0, 1);  // TEST
+   while(1);  //calibrate
+   #else
+   si5351.output_enable(SI5351_CLK0, 0);  // TEST
+   #endif
 #ifdef CALIBRATION
 // Calibration
-  si5351.set_freq(10000000UL*100UL, SI5351_CLK0);
-  si5351.output_enable(SI5351_CLK0, 1);
-  si5351.drive_strength(SI5351_CLK0, SI5351_DRIVE_2MA);
+  si5351.set_freq(10000000UL*100UL, SI5351_CLK2);
+  si5351.output_enable(SI5351_CLK2, 1);
+  si5351.drive_strength(SI5351_CLK2, SI5351_DRIVE_2MA);
 #endif
   }
 }
 
-
+//
 // Thread functions
+//
 int i = 0;
-int16_t bias = 900;
+int16_t bias = 900; // should correct this dc bias
 
 
 
@@ -266,6 +285,14 @@ void adc_input_function() {
    } // sample while loop
   
   } // outer while loop
+ }
+
+// Keep checking for audio from the PC
+ void usb_input_function() {
+  while (1) {
+    USBAudioRead();
+  }
+
  }
 
 // should this be a thread?
@@ -399,6 +426,12 @@ void cat() {
   Serial.flush();   
 }
 
+// cat thread
+void cat_function() {
+  while (1) {
+  if (Serial.available() > 0) cat(); else ThisThread::sleep_for(10);
+  }
+}
 
 // Helpers
 
@@ -420,10 +453,11 @@ void change_freq(uint32_t f) {
     h = f / 1000;
     l = f - 1000*h;
     rx.setFrequency(h);
-    if (l > 0) rx.setSSBBfo(l);
+    if (l > 0) rx.setSSBBfo(-l);
     RF_freq = f;
 }
 
+// Send usb audio data to the PC
 void USBAudioWrite(int16_t left,int16_t right) {
   if(nBytes>191){
     uint8_t *writeBuffer =  (uint8_t *)writeBuffer16;
@@ -438,6 +472,24 @@ void USBAudioWrite(int16_t left,int16_t right) {
   writeBuffer16[writeCounter]=right;
   writeCounter++;
   nBytes+=2;
+}
+
+// Fetch usb audio from PC into the radio (for control of transmittion)
+void USBAudioRead() {
+  int32_t monosum=0;
+  
+  USBAudio_read_in = audio.read(readBuffer, sizeof(readBuffer));
+ 
+  if (USBAudio_read_in) {
+    for (int i = 0; i < 48 ; i++) {
+      int16_t outL = (readBuffer[4*i]) + (readBuffer[4*i+1] << 8);
+      int16_t outR = (readBuffer[4*i+2]) + (readBuffer[4*i+3] << 8);
+      int16_t mono = (outL+outR)/2;
+      monosum += mono;
+      monodata[i] = mono;
+    }
+  }
+  if (monosum == 0) USBAudio_read_in = false;
 }
 
 void loadSSB()
@@ -464,7 +516,7 @@ void setup() {
         flash_led(colors[0], 200,400);
       }
     }
-
+#if 1
     receiver_setup();
         if (!i2c_found) {
       // Just flash purple forever -  receiver not found
@@ -472,26 +524,151 @@ void setup() {
           flash_led(colors[4], 200, 400);
         }
     }
-
+#endif
    flash_led(colors[6], 200, 0); //white flash - setup OK
 
     receiving = true;
 
     adc_update_thread.start(adc_input_function);
+
+    usb_input_thread.start(usb_input_function); // runs continously checking for usb audio input
+
+    cat_thread.start(cat_function); // runs while there is serial input
+
+#ifdef DEBUGGING
+
+  #define DBG_PIN 8
+// assumes 8 bit value
+
+#endif  
+}
+
+
+// Transmit code - samples input audio and adjusts tx (CLK0) frequency
+// The samples arrive in a buffer, we need to look for +/- transitions and measure the
+// period to determine the delta in transmit frequency.
+
+void transmit(int64_t tx_freq) {
+  si5351.set_freq(RF_freq*100UL + tx_freq, SI5351_CLK0);
+ // si5351.drive_strength(SI5351_CLK0, SI5351_DRIVE_8MA);
+  si5351.output_enable(SI5351_CLK0, 1);  // TEST
+
+}
+
+int16_t mono_prev=0;  
+int16_t mono_preprev=0;  
+float delta_prev=0;
+int16_t sampling=0;
+int16_t cycle=0;
+uint32_t cycle_frequency[136];
+uint32_t Tx_last_mod_time;
+int last_audio_freq;
+
+void transmitting() {
+  int i;
+  int16_t mono, difference;
+  float delta, period;
+  uint64_t audio_freq;
+  bool tx_finished = false;
+
+  digitalWrite(RX_ENABLE, 0); // turn on transmit path, disable receiver
+  pixels.setPixelColor(0, colors[0]); // RED
+  pixels.show();
+
+  #ifdef DEBUGGING
+  analogWrite(DBG_PIN, 0);
+  #endif
+
+  while (USBAudio_read_in) {
   
+    for (i = 0; i < 48; i++) {
+      mono = monodata[i];
+      #ifdef DEBUGGING
+      analogWrite(DBG_PIN,mono>>8);
+      #endif
+      if ((mono_prev < 0) && (mono >= 0)) { // zero crossing
+        if ((mono == 0) && (((double)mono_prev * 1.8 - (double)mono_preprev < 0.0) || ((double)mono_prev * 2.02 - (double)mono_preprev > 0.0))) {    //Detect the sudden drop to zero due to the end of transmission
+          tx_finished = true;
+          break;
+        }
+      difference = mono - mono_prev;
+      delta = (float) mono_prev / (float) difference;
+      period = ((float) 1.0 + delta_prev) + (float) sampling - delta;
+      audio_freq = (uint64_t)(AUDIOSAMPLING*100.0/(double) period); // in 0.01 Hz 
+
+//      #ifdef DEBUGGING
+//      analogWrite(DBG_PIN,audio_freq*256/3000);
+//      #endif
+      if ((audio_freq > FSK_MIN) && (audio_freq < FSK_MAX)){
+          cycle_frequency[cycle]=(uint32_t)audio_freq;
+          cycle++;
+        }
+        // Store previous values
+        delta_prev = delta;
+        sampling = 0;
+        mono_preprev = mono_prev;
+        mono_prev = mono;     
+      } else {
+    // no crossing, just move on
+      sampling++;
+      mono_preprev = mono_prev;
+      mono_prev = mono;
+      }
+      
+    }
+  
+    if (tx_finished) break;
+
+    /*------------
+      This is a cycle throttle meassurement where even if a frequency change has been detected no
+      change will be propagated to the Si5351 unless a minimum of FSK_THRESHOLD (msec) has been elapsed
+      avoiding cluttering the I2C bus with noise
+    */  
+    if ((cycle > 0) && ((millis() - Tx_last_mod_time) > FSK_THRESHOLD)) { 
+      audio_freq = 0;
+      for (int i=0; i<cycle; i++){
+        audio_freq += cycle_frequency[i];
+      }
+      audio_freq = audio_freq / cycle; // average the audio freqs
+
+      long unsigned freqdiff=abs((long int)audio_freq-(long int)last_audio_freq);
+      
+      if (freqdiff > FSK_MIN_CHANGE) {
+         transmit(audio_freq);
+      }   
+      cycle = 0;
+      Tx_last_mod_time = millis();
+      last_audio_freq = audio_freq;
+    }
+
+ 
+  } // end of main USB read loop
+
+  cycle = 0;
+  sampling = 0;
+  mono_preprev = 0;
+  mono_prev = 0;
+  last_audio_freq = 0;
+
+  si5351.output_enable(SI5351_CLK0, 0);  // TX Off
+  digitalWrite(RX_ENABLE, 1); // we are done, turn RX back on
+  pixels.setPixelColor(0, colors[7]); // Black
+  pixels.show();
+ 
+  #ifdef DEBUGGING
+  analogWrite(DBG_PIN, 0);
+  #endif
 }
 
 void loop() {
-  #if 0
- // Serial.println("testing");
-  ThisThread::sleep_for(MS(800));
-  Serial.print("RX Freq="); Serial.print(rx.getFrequency()); 
-  Serial.print(" RX RSSI="); Serial.print(rx.getReceivedSignalStrengthIndicator()); Serial.println();
- // Serial.print("dc bias "); Serial.println(bias); 
-#else
-  if (Serial.available()) {
-    cat();
+  
+ // if (Serial.available()) {
+ //   cat();
+//  }
+  // Check for transmit - when we get some usb audio from the computer
+  if (USBAudio_read_in) {
+    transmitting();
   }
-#endif
+
 }
 
